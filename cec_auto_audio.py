@@ -28,15 +28,11 @@ CONSOLE_LAS = {0x4, 0x8, 0xB}
 
 DENON_LA = 0x5
 
-# How long to wait after a console becomes Active Source to see
-# if Denon naturally sends 5f:72:01 before we inject tx 15:70:00:00.
-PENDING_TIMEOUT_SEC = 0.5
-
 # Minimum gap between our own injections, to avoid spam.
 MIN_INJECTION_INTERVAL_SEC = 3.0
 
 # Start in dry-run so you can verify behavior without actually sending.
-DRY_RUN = False
+DRY_RUN = True
 
 # ------------------------------------------------------------------------
 
@@ -105,7 +101,7 @@ def main():
 
     # State: pending console that just became active, waiting to see if Denon
     # responds on its own with 5f:72:01.
-    pending = None  # dict with keys: la, phys, deadline
+    on_status = None  # dict with keys time, count
     last_injection_time = 0.0
 
     print(f"[INFO] Spawned: {' '.join(cmd)}")
@@ -131,93 +127,72 @@ def main():
                 and opcode == 0x72
                 and data and data[0] == 0x01
             ):
-                # Denon just turned System Audio Mode ON and presumably powered up.
+
                 ts = now_str()
-                print(f"[AUTO {ts}] Detected Denon Set System Audio Mode (5f:72:01).")
+                # if we have seen this within the last minute, we could be in a contention situation
+                # if more than a minute, we should be ok, so should reset
+                if on_status is not None:
+                    if on_status["time"] < (time.time()-60):
+                        # reset
+                        on_status["time"] = time.time()
+                        on_status["count"] = 1
 
-                # If we were waiting to inject for a console, cancel it - the system
-                # is already doing the right thing on its own.
-                if pending is not None:
-                    la = pending["la"]
-                    phys = pending["phys"]
-                    print(
-                        f"[AUTO {ts}] Pending console LA {la:X} (phys {phys}) "
-                        f"was satisfied by natural Denon behavior; not injecting."
-                    )
-                    pending = None
-
-                continue
-
-            # 2) Active Source from some device (opcode 0x82)
-            if dst_la == 0xF and opcode == 0x82 and len(data) >= 2:
-                phys = f"{data[0]:02x}:{data[1]:02x}"
-                ts = now_str()
-
-                # Only care about LAs we treat as playback devices.
-                if src_la in CONSOLE_LAS:
-                    print(
-                        f"[AUTO {ts}] Playback/console at logical {src_la:X} "
-                        f"became Active Source, phys {phys}."
-                    )
-
-                    # Start a small timer: if Denon hasn't done 5f:72:01
-                    # by the time this expires, we'll inject a System Audio
-                    # Mode Request.
-                    pending = {
-                        "la": src_la,
-                        "phys": phys,
-                        "deadline": time.time() + PENDING_TIMEOUT_SEC,
-                    }
-                else:
-                    # Some other device (TV, tuner, etc.) became active.
-                    # We don't treat it as a console trigger.
-                    print(
-                        f"[AUTO {ts}] Active Source from logical {src_la:X}, "
-                        "not a playback LA; ignoring."
-                    )
-
-                continue
-
-            # 3) Timeout check: should we inject our System Audio Mode Request?
-            now = time.time()
-            if pending is not None and now >= pending["deadline"]:
-                src_la = pending["la"]
-                phys = pending["phys"]
-                ts = now_str()
-
-                # Rate limiting: don't spam if something weird happens.
-                if now - last_injection_time < MIN_INJECTION_INTERVAL_SEC:
-                    print(
-                        f"[AUTO {ts}] Pending console LA {src_la:X} (phys {phys}) "
-                        f"reached timeout, but injection was recent; skipping to avoid spam."
-                    )
-                    pending = None
-                else:
-                    cmd_str = "tx 15:70:00:00"
-                    if DRY_RUN:
-                        print(
-                            f"[AUTO {ts}] [DRY RUN] Would send: {cmd_str} "
-                            f"(System Audio Mode Request to Denon for TV)."
-                        )
                     else:
-                        print(
-                            f"[AUTO {ts}] Sending: {cmd_str} "
-                            f"(System Audio Mode Request to Denon for TV)."
-                        )
-                        try:
-                            proc.stdin.write(cmd_str + "\n")
-                            proc.stdin.flush()
-                            last_injection_time = now
-                        except BrokenPipeError:
-                            print(
-                                f"[ERROR {ts}] Failed to write '{cmd_str}' to cec-client "
-                                "(BrokenPipeError)."
-                            )
-                            # No point continuing if we can't send.
-                            break
+                        # update seen time and count
+                        on_status["time"] = time.time()
+                        on_status["on_count"] = on_status.get("on_count", 0) + 1
 
-                    # Either way, clear the pending console.
-                    pending = None
+                else:
+                    on_status["time"] = time.time()
+                    on_status["count"] = 1
+
+                print(f"[AUTO {ts}] Detected Denon Set System Audio Mode (5f:72:01). Count in last minute is {on_status["count"]}.")
+
+            if (
+                src_la == DENON_LA
+                and dst_la == 0xF
+                and opcode == 0x72
+                and data and data[0] == 0x00
+            ):
+                # Denon set off status, should not do this
+                now = time.time()
+                if on_status is None:
+                    print("Hm, saw denon do audio mode off, but haven't seen on. Unexpected, will do nothing, but you should investigate")
+                elif on_status is not None:
+                    if now < (on_status["time"] + 60):
+                        # do something...
+                        # Rate limiting: don't spam if something weird happens.
+                        if now - last_injection_time < MIN_INJECTION_INTERVAL_SEC:
+                            print("Saw denon do audio mode off, but have already tried to correct recently, doing nothing.")
+                            
+                        else:
+                            cmd_str = "tx 5f:72:01"
+                            if DRY_RUN:
+                                print(
+                                    f"[AUTO {ts}] [DRY RUN] Would send: {cmd_str} "
+                                    f"(System Audio Mode Request to Denon for TV)."
+                                )
+                            else:
+                                print(
+                                    f"[AUTO {ts}] Sending: {cmd_str} "
+                                    f"(System Audio Mode Request to Denon for TV)."
+                                )
+                                try:
+                                    proc.stdin.write(cmd_str + "\n")
+                                    proc.stdin.flush()
+                                    last_injection_time = now
+                                except BrokenPipeError:
+                                    print(
+                                        f"[ERROR {ts}] Failed to write '{cmd_str}' to cec-client "
+                                        "(BrokenPipeError)."
+                                    )
+                                    # No point continuing if we can't send.
+                                    break
+
+                    else:
+                        time_elapsed = now - on_status["time"]
+                        print(f"Saw denon set audio mode off, but it was {time_elapsed} seconds ago, above threshold. Maybe tune settings if you want something done.")
+
 
             # If there's no pending console or no timeout yet, just keep looping.
 

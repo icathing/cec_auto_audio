@@ -28,6 +28,7 @@ CONSOLE_LAS = {0x4, 0x8, 0xB}
 
 DENON_LA = 0x5
 
+
 # Minimum gap between our own injections, to avoid spam.
 MIN_INJECTION_INTERVAL_SEC = 3.0
 
@@ -149,10 +150,18 @@ def main():
                     print("initting on_status") 
                     on_status = {
                     "time":  time.time(),
-                    "count":  1
+                    "count":  1,
+                    "standby_time": 0
 	            }
                 print(f"[AUTO {ts}] Detected Denon Set System Audio Mode (5f:72:01). Count in last minute is {on_status['count']}.")
-
+            if (dst_la == 0xF and opcode == 0x36):
+                # tv is turning off
+                if on_status is None:
+                    print("TV turning off but didn't see it turn on????")
+                else:
+                    print("TV turning off, recording time")
+                    on_status["standby_time"] = time.time()
+                
             if (
                 src_la == DENON_LA
                 and dst_la == 0xF
@@ -169,7 +178,8 @@ def main():
                         # Rate limiting: don't spam if something weird happens.
                         if now - last_injection_time < MIN_INJECTION_INTERVAL_SEC:
                             print("Saw denon do audio mode off, but have already tried to correct recently, doing nothing.")
-                            
+                        elif now - on_status["standby_time"] < 60:
+                            print("Denon did audio mode off, but there was a standby command in last 60 seconds, doing nothing.")
                         else:
                             cmd_str = "tx 15:70:00:00"
                             if DRY_RUN:

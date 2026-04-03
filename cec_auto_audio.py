@@ -32,7 +32,7 @@ DENON_LA = 0x5
 MIN_INJECTION_INTERVAL_SEC = 3.0
 
 # Start in dry-run so you can verify behavior without actually sending.
-DRY_RUN = True
+DRY_RUN = False
 
 # ------------------------------------------------------------------------
 
@@ -85,7 +85,9 @@ def main():
     # One interactive cec-client; we both read and write to it.
     # -d 8 = TRAFFIC only, which keeps output manageable.
     # (You can also bump this to 31 while debugging.)
-    cmd = ["cec-client", "-d", "8"]
+    cmd = ["cec-client", "-d", "8", 
+        "-o", "Pi-Receiver-Fix", 
+        "-t", "r"]
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
@@ -134,19 +136,22 @@ def main():
                 if on_status is not None:
                     if on_status["time"] < (time.time()-60):
                         # reset
+                        print("resetting on_status counter, it's been over a minute")
                         on_status["time"] = time.time()
                         on_status["count"] = 1
 
                     else:
                         # update seen time and count
                         on_status["time"] = time.time()
-                        on_status["on_count"] = on_status.get("on_count", 0) + 1
+                        on_status["count"] = on_status.get("count", 0) + 1
 
                 else:
-                    on_status["time"] = time.time()
-                    on_status["count"] = 1
-
-                print(f"[AUTO {ts}] Detected Denon Set System Audio Mode (5f:72:01). Count in last minute is {on_status["count"]}.")
+                    print("initting on_status") 
+                    on_status = {
+                    "time":  time.time(),
+                    "count":  1
+	            }
+                print(f"[AUTO {ts}] Detected Denon Set System Audio Mode (5f:72:01). Count in last minute is {on_status['count']}.")
 
             if (
                 src_la == DENON_LA
@@ -166,7 +171,7 @@ def main():
                             print("Saw denon do audio mode off, but have already tried to correct recently, doing nothing.")
                             
                         else:
-                            cmd_str = "tx 5f:72:01"
+                            cmd_str = "tx 15:70:00:00"
                             if DRY_RUN:
                                 print(
                                     f"[AUTO {ts}] [DRY RUN] Would send: {cmd_str} "
